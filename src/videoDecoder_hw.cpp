@@ -224,6 +224,7 @@ int VideoDecoder::open_codec(int width, int height, int fps, int decode_id)
 
     const AVCodec *codec;
     int hwtype = 0; // AV_HWDEVICE_TYPE_NONE;
+    bool useNVMPI = false;   // jetson
     // 27: h264, 173: h265
     if (decode_id_ == 27)
     {
@@ -244,6 +245,17 @@ int VideoDecoder::open_codec(int width, int height, int fps, int decode_id)
             impl_->enable_hwaccel_ = true;
             impl_->hw_type = HW_TYPE_CUDA;
             std::cout << "use h264_cuvid decoder." << std::endl;
+            goto end_find_decoder;
+        }
+
+        codec = avcodec_find_decoder_by_name("h264_nvmpi");
+        if (NULL != codec)
+        {
+            hwtype = 2; // AV_HWDEVICE_TYPE_CUDA;
+            impl_->enable_hwaccel_ = true;
+            impl_->hw_type = HW_TYPE_CUDA;
+            std::cout << "use h264_nvmpi decoder." << std::endl;
+            useNVMPI = true;
             goto end_find_decoder;
         }
 
@@ -269,6 +281,17 @@ int VideoDecoder::open_codec(int width, int height, int fps, int decode_id)
             impl_->enable_hwaccel_ = true;
             impl_->hw_type = HW_TYPE_CUDA;
             std::cout << "use hevc_cuvid decoder." << std::endl;
+            goto end_find_decoder;
+        }
+
+        codec = avcodec_find_decoder_by_name("hevc_nvmpi");
+        if (NULL != codec)
+        {
+            hwtype = 2; // AV_HWDEVICE_TYPE_CUDA;
+            impl_->enable_hwaccel_ = true;
+            impl_->hw_type = HW_TYPE_CUDA;
+            std::cout << "use hevc_nvmpi decoder." << std::endl;
+            useNVMPI = true;
             goto end_find_decoder;
         }
 
@@ -326,7 +349,7 @@ end_find_decoder:
     // impl_->codec_ctx_->flags       |= AV_CODEC_FLAG2_LOCAL_HEADER;
     // impl_->codec_ctx_->flags       |= AV_CODEC_FLAG_LOW_DELAY;
 
-    if(!impl_->enable_hwaccel_)
+    if(!impl_->enable_hwaccel_ || useNVMPI)
     {
         impl_->codec_ctx_->pix_fmt = AV_PIX_FMT_YUV420P;
         av_opt_set(impl_->codec_ctx_->priv_data, "tune", "zerolatency", 0);
@@ -339,8 +362,10 @@ end_find_decoder:
         av_opt_set_int(impl_->codec_ctx_, "refcounted_frames", 1, 0);
         if (impl_->hw_decoder_init(impl_->codec_ctx_, (AVHWDeviceType)hwtype) < 0)
         {
-            std::cout << "Failed to initialize hw decoder" << std::endl;
-            return -1;
+            std::cout << "Failed to initialize hw decoder, try sw decoder" << std::endl;
+            // return -1;
+            av_opt_set(impl_->codec_ctx_->priv_data, "tune", "zerolatency", 0);
+            av_opt_set(impl_->codec_ctx_->priv_data, "preset", "fast", 0);
         }
         
     }
