@@ -4,6 +4,7 @@
 #include "easyvideo/opencv/stream.h"
 extern "C" {
 #include <libavcodec/avcodec.h>
+// #include <libavcodec/>
 #include <libavformat/avformat.h>
 #include <libavutil/pixdesc.h>
 #include <libavutil/hwcontext.h>
@@ -21,6 +22,8 @@ struct Stream::Impl
     AVStream *video = nullptr;
     AVPacket* packet = nullptr;
 
+    int step = 1;
+
     int width=-1, height=-1, fps=-1, codec_id=-1;
 };
 
@@ -35,8 +38,9 @@ int Stream::open(std::string url)
     impl->isOpened = false;
 
     AVDictionary* options = nullptr;
-    av_dict_set(&options, "rtsp_transport", "tcp", 0);
-    av_dict_set_int(&options, "udp_buffer_size", 10 * 1024 * 1024, 0);
+    // av_dict_set(&options, "rtsp_transport", "tcp", 0);
+    av_dict_set(&options, "rtsp_transport", "udp", 0);
+    av_dict_set_int(&options, "udp_buffer_size", 1024 * 1024, 0);
     av_dict_set(&options, "stimeout", "2000000", 0);
 
     // int ret = avformat_open_input(&fmt_ctx, rtsp_url, nullptr, &options);
@@ -69,6 +73,11 @@ int Stream::open(std::string url)
     impl->codec_id = impl->video->codecpar->codec_id;
     impl->isOpened = true;
     return 0;
+}
+
+void Stream::setStep(size_t step)
+{
+    impl->step = step;
 }
 
 int Stream::width()
@@ -113,10 +122,45 @@ int Stream::cur_dts()
     {
         return -1;
     }
-    return impl->video->cur_dts;
+    // return impl->video->cur_dts;
+    return 0;
 }
 
 void* Stream::read(int& size)
+{
+    if (impl == nullptr)
+    {
+        return nullptr;
+    }
+    if (!impl->isOpened)
+    {
+        return nullptr;
+    }
+
+    if (impl->packet != nullptr)
+    {
+        av_packet_unref(impl->packet);
+        av_packet_free(&impl->packet);
+        impl->packet = nullptr;
+    }
+    impl->packet = av_packet_alloc();
+    
+    int ret = 0;
+    for (int i=0;i<impl->step;++i)
+    {
+        ret = av_read_frame(impl->input_ctx, impl->packet);
+    }
+    
+    if (ret < 0)
+    {
+        size = 0;
+        return nullptr;
+    }
+    size = impl->packet->size;
+    return impl->packet->data;
+}
+
+void* Stream::read(int& size, int64_t& pts, int64_t& dts, bool& isKeyFrame)
 {
     if (impl == nullptr)
     {
@@ -142,9 +186,11 @@ void* Stream::read(int& size)
         return nullptr;
     }
     size = impl->packet->size;
+    pts = impl->packet->pts;
+    dts = impl->packet->dts;
+    isKeyFrame = (impl->packet->flags & AV_PKT_FLAG_KEY) != 0;
     return impl->packet->data;
 }
-
 
 void Stream::close()
 {

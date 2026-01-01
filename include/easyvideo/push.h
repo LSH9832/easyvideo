@@ -40,6 +40,7 @@ public:
     void push_frame(cv::Mat &frame);
     void pushFrameData(cv::Mat &frame);
     int open_codec(int width, int height, int den, int kB=100, std::string encoder_name="");
+    bool isConnected();
 
 private:
     int push();

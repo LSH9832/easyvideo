@@ -59,8 +59,13 @@ public:
     {
         if (!isOpened()) return;
         cap.set(propId, value);
-        if (propId == 4) {sz.height = cap.get(propId);}
-        if (propId == 3) {sz.width = cap.get(propId);}
+        if (propId == cv::CAP_PROP_FRAME_HEIGHT || 
+            propId == cv::CAP_PROP_FRAME_WIDTH) 
+        {
+            sz.height = cap.get(cv::CAP_PROP_FRAME_HEIGHT);
+            sz.width = cap.get(cv::CAP_PROP_FRAME_WIDTH);
+        }
+        std::cout << sz << std::endl;
         setSize(sz);
     }
 

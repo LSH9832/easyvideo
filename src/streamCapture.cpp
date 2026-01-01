@@ -28,7 +28,8 @@ struct StreamCaptureHandler
     // AVPacket packet;
     // int video_stream, ret;
     int ret;
-    VideoDecoder decoder;
+    VideoDecoder* decoder=nullptr;
+    bool no_decoder=false;
     bool isOpened = false;
     int firstRead = STREAM_CAP_FIRST_READ_TIMES;
     int fps=-1;
@@ -46,6 +47,20 @@ struct StreamCaptureHandler
 
     cv::Mat currentImg;
 
+    bool readStream(streamData& sdata)
+    {
+        if (!isOpened)
+        {
+            return false;
+        }
+        sdata.data = stream.read(sdata.size, sdata.pts, sdata.dts, sdata.isKeyFrame);
+        if (sdata.data == nullptr || sdata.size <= 0)
+        {
+            return false;
+        }
+        return true;
+    }
+
     bool read(cv::Mat& img)
     {
         if (!isOpened)
@@ -58,7 +73,7 @@ struct StreamCaptureHandler
         {
             return false;
         }
-        ret = decoder.decodeFrame((uint8_t*)data, size, img);
+        ret = decoder->decodeFrame((uint8_t*)data, size, img);
         bool success = ret == 0;
         if (!success && firstRead)
         {
@@ -71,7 +86,6 @@ struct StreamCaptureHandler
         }
         return success;
     }
-
 
     bool getFrame(cv::Mat& frame, uint64_t& id)
     {
@@ -100,7 +114,7 @@ struct StreamCaptureHandler
         while (!stopThread)
         {
             // std::cout << "recvThread" << std::endl;
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            std::this_thread::sleep_for(std::chrono::milliseconds(3));
             std::unique_lock<std::mutex> lock(imgProcessMutex2);
             imgProcessCond1.wait(lock, [this](){return !imgProcessing || stopThread;});
             if (stopThread)
@@ -136,6 +150,85 @@ StreamCapture::~StreamCapture()
     release();
 }
 
+static bool stringStartswith(std::string& str_, const std::string& prefix) {
+    size_t str_len = str_.length();
+    size_t prefix_len = prefix.length();
+    if (prefix_len > str_len) return false;
+    return str_.find(prefix) == 0;
+}
+
+static bool stringEndswith(std::string& str_, const std::string& suffix) {
+    size_t str_len = str_.length();
+    size_t suffix_len = suffix.length();
+    if (suffix_len > str_len) return false;
+    return (str_.find(suffix, str_len - suffix_len) == (str_len - suffix_len));
+}
+
+bool StreamCapture::open(std::string url, std::string decoder_name)
+{
+    if (isOpened())
+    {
+        release();
+    }
+
+    if (impl_ == nullptr)
+    {
+        impl_ = new StreamCaptureHandler();
+    }
+    auto impl = static_cast<StreamCaptureHandler*>(impl_);
+    impl->isOpened = false;
+
+    int ret = impl->stream.open(url);
+    if (ret < 0)
+    {
+        fprintf(stderr, "Cannot open stream.\n");
+        return false;
+    }
+
+    if (decoder_name.empty())
+    {
+        std::cout << "decoder name empty, origin data only" << std::endl;
+        impl->no_decoder = true;
+    }
+    else
+    {
+        if (stringEndswith(decoder_name, "_rkmpp"))
+        {
+            impl->decoder = getVideoDecoder(CODEC_PLATFORM_RKMPP);
+        }
+        else
+        {
+            impl->decoder = getVideoDecoder(CODEC_PLATFORM_FFMPEG);
+        }
+
+        ret = impl->decoder->open_codec(
+            impl->stream.width(), 
+            impl->stream.height(),
+            impl->stream.fps(),
+            decoder_name
+        );
+        if (ret < 0)
+        {
+            fprintf(stderr, "Cannot open video decoder.\n");
+            return false;
+        }
+    }
+    
+    impl->isOpened = true;
+    impl->firstRead = STREAM_CAP_FIRST_READ_TIMES;
+    impl->stopThread = false;
+    if (impl->recvMethod == STREAM_RECV_METHOD_DROP)
+    {
+        std::cout << "recvMethod: drop" << std::endl;
+        impl->recv_t = std::thread(&StreamCaptureHandler::recvThread, impl);
+    }
+    else
+    {
+        std::cout << "recvMethod: block" << std::endl;
+    }
+    return true;
+}
+
 
 bool StreamCapture::open(std::string url, int apiPreference)
 {
@@ -157,8 +250,13 @@ bool StreamCapture::open(std::string url, int apiPreference)
         fprintf(stderr, "Cannot open stream.\n");
         return false;
     }
-
-    ret = impl->decoder.open_codec(
+// #define ENABLE_RKMPP
+#ifdef ENABLE_RKMPP
+    impl->decoder = getVideoDecoder(CODEC_PLATFORM_RKMPP);
+#else
+    impl->decoder = getVideoDecoder(CODEC_PLATFORM_FFMPEG);
+#endif
+    ret = impl->decoder->open_codec(
         impl->stream.width(), 
         impl->stream.height(),
         impl->stream.fps(),
@@ -196,6 +294,10 @@ bool StreamCapture::read(cv::Mat &frame)
     {
         return false;
     }
+    if(impl->no_decoder)
+    {
+        std::cerr << "decoder not init!" << std::endl;
+    }
 
     if (impl->recvMethod == STREAM_RECV_METHOD_DROP)
     {
@@ -206,6 +308,22 @@ bool StreamCapture::read(cv::Mat &frame)
         return impl->read(frame);
     }
 }
+
+
+bool StreamCapture::readStream(streamData& data)
+{
+    if (impl_ == nullptr)
+    {
+        return false;
+    }
+    auto impl = static_cast<StreamCaptureHandler*>(impl_);
+    if (!impl->isOpened)
+    {
+        return false;
+    }
+    return impl->readStream(data);
+}
+
 
 bool StreamCapture::isOpened()
 {
@@ -232,6 +350,10 @@ void StreamCapture::set(int propId, double value)
     {
         impl->recvMethod = (int)value;
         // std::cout << "recvMethod: " << value << std::endl;
+    }
+    else if (propId == STREAM_RECV_STEP)
+    {
+        impl->stream.setStep((size_t)value);
     }
 }
 
@@ -277,6 +399,11 @@ void StreamCapture::release()
     }
 
     impl->stream.close();
+    if (impl->decoder != nullptr)
+    {
+        delete impl->decoder;
+        impl->decoder = nullptr;
+    }
     delete impl;
     impl_ = nullptr;
 }

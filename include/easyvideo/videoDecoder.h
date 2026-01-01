@@ -14,21 +14,17 @@
 class VideoDecoder {
 public:
     VideoDecoder() {}; 
-    VideoDecoder(int width, int height, int fps, int decode_id=CODEC_H264);
-    int open_codec(int width, int height, int fps, int decode_id=CODEC_H264);
-    int decodeFrame(uint8_t *inData, int inLen, cv::Mat &outMatV, bool readAll=false);
+    virtual int open_codec(int width, int height, int fps, int decode_id=CODEC_H264){printf("not complete!"); return 1;};
+    virtual int open_codec(int width, int height, int fps, std::string decoder_name=""){printf("not complete!"); return 1;};
+    virtual int decodeFrame(uint8_t *inData, int inLen, cv::Mat &outMatV, bool readAll=false){printf("not complete!"); return 1;};
     
     int decode_id_=CODEC_H264;
     int width_;
     int height_;
     int fps_;
 
-private:
-
-    struct Impl;
-    Impl *impl_=nullptr;
-
 };
 
+VideoDecoder* getVideoDecoder(CodecPlatform plat=CODEC_PLATFORM_FFMPEG);
 
 #endif  // _VIDEO_DECODER_H_

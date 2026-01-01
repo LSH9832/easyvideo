@@ -1,5 +1,63 @@
 #include "easyvideo/push.h"
 
+// #define ENABLE_RKMPP
+#ifdef ENABLE_RKMPP
+#include "platform/rockchip/rockchip/mpp_buffer.h"
+#include "platform/rockchip/rockchip/mpp_err.h"
+#include "platform/rockchip/rockchip/mpp_frame.h"
+#include "platform/rockchip/rockchip/mpp_packet.h"
+#include "platform/rockchip/rockchip/mpp_task.h"
+#include "platform/rockchip/rockchip/rk_mpi.h"
+#include "platform/rockchip/rga/RgaApi.h"
+#include "platform/rockchip/rga/rga.h"
+#include "platform/rockchip/rga/im2d.hpp"
+
+#ifdef SYLIXOS
+static inline bool BGR2YUV420_Mpp(cv::Mat& bgr, int w, int h, uint8_t* yuv) {
+    rga_info_t src = {0}, dst = {0};
+    src.fd = -1;
+    src.virAddr = bgr.data;
+    src.format = RK_FORMAT_BGR_888;
+    rga_set_rect(&src.rect, 0, 0, w, h, w, h, RK_FORMAT_BGR_888);
+
+    dst.fd = -1;
+    dst.virAddr = yuv;
+    dst.format = RK_FORMAT_YUYV_420;
+    rga_set_rect(&dst.rect, 0, 0, w, h, w, h, RK_FORMAT_YUYV_420);
+
+    c_RkRgaBlit(&src, &dst, nullptr);
+    return true;
+}
+#else
+static inline bool BGR2YUV420_Mpp(cv::Mat& bgr, int w, int h, uint8_t* yuv) {
+    rga_buffer_t src_img, dst_img;
+    rga_buffer_handle_t src_handle, dst_handle;
+
+    auto src_format = RK_FORMAT_BGR_888;
+    auto dst_format = RK_FORMAT_YCbCr_420_P;
+
+    src_handle = importbuffer_virtualaddr(bgr.data, w * h * 3);
+    dst_handle = importbuffer_virtualaddr(yuv, w * h * 3 / 2);
+    
+    src_img = wrapbuffer_handle(src_handle, w, h, src_format);
+    dst_img = wrapbuffer_handle(dst_handle, w, h, dst_format);
+
+    int ret = imcvtcolor(src_img, dst_img, src_format, dst_format, IM_RGB_TO_YUV_BT709_LIMIT);
+
+    if (ret != IM_STATUS_SUCCESS)
+    {
+        std::cout << __FILE__ << ":" << __LINE__ << " -error code: " << ret << std::endl;
+        return false;
+    }
+    else
+    {
+        // std::cout << "convert success" << std::endl;
+        return true;
+    }
+}
+#endif
+#endif
+
 namespace easyvideo
 {
 AVFrame *RTSPPusher::CVMatToAVFrame(cv::Mat &inMat, int YUV_TYPE) {
@@ -26,17 +84,29 @@ AVFrame *RTSPPusher::CVMatToAVFrame(cv::Mat &inMat, int YUV_TYPE) {
     }
 
     //转换颜色空间为YUV420
-    cv::cvtColor(inMat, inMat, cv::COLOR_BGR2YUV_I420);
+    cv::Mat yuv(cv::Size(width, (int)(height * 3 / 2)), CV_8UC1);
+
+
+#ifdef ENABLE_RKMPP
+    // std::cout << "using rga converter\n";
+    BGR2YUV420_Mpp(inMat, width, height, yuv.data);
+#else
+    cv::cvtColor(inMat, yuv, cv::COLOR_BGR2YUV_I420);
+#endif
+    
 
     //按YUV420格式，设置数据地址
     int frame_size = width * height;
-    unsigned char *data = inMat.data;
-
-    memcpy(frame->data[0], data, frame_size);
-    memcpy(frame->data[1], data + frame_size, frame_size/4);
-    memcpy(frame->data[2], data + frame_size * 5/4, frame_size/4);
+    memcpy(frame->data[0], yuv.data, frame_size);
+    memcpy(frame->data[1], yuv.data + frame_size, frame_size/4);
+    memcpy(frame->data[2], yuv.data + frame_size * 5/4, frame_size/4);
 
     return frame;
+}
+
+bool RTSPPusher::isConnected()
+{
+    return outputConnected_;
 }
 
 int RTSPPusher::push() {
@@ -68,8 +138,9 @@ int RTSPPusher::push() {
     long max_dts = 0;
     long count = 0;
     
-
-    while(true){
+#define RETRY_TIMES 5
+    int rest_try_times = RETRY_TIMES;
+    while(outputConnected_){
         // frame = pop_one_frame();
         // std::cout << 1 << std::endl;
         popOneFrameData(frame);
@@ -152,8 +223,17 @@ int RTSPPusher::push() {
             // av_free(&pack);
             // std::cout << 6 << std::endl;
             // delete header_data;
-            continue;
+            if (rest_try_times--)
+            {
+                continue;
+            }
+            else
+            {
+                outputConnected_ = false;
+                break;
+            }
         }
+        rest_try_times = RETRY_TIMES;
         // std::cout << 7 << std::endl;
         av_frame_free(&yuv);
         // delete header_data;
@@ -171,7 +251,8 @@ int RTSPPusher::open_codec(int width, int height, int den, int kB, std::string e
     // const AVCodec *codec = avcodec_find_encoder(AV_CODEC_ID_H264);
     enable_hardware = false;
 
-    AVCodec* codec=NULL; // = avcodec_find_encoder_by_name("h264_nvenc");
+    // std::cout << 1 << std::endl;
+    const AVCodec* codec = NULL; //avcodec_find_encoder_by_name(encoder_name.c_str());
     if (!encoder_name.empty())
     {
         std::cout << "try find encoder: " << encoder_name << std::endl;
@@ -180,11 +261,13 @@ int RTSPPusher::open_codec(int width, int height, int den, int kB, std::string e
     }
     else
     {
-        std::cout << "use software decoder" << std::endl;
+        
     }
 // Intel QSV
+    // std::cout << 2 << std::endl;
     if (!codec)
     {
+        // std::cout << "use software decoder" << std::endl;
         if (!encoder_name.empty())
         {
             std::cerr << "Can`t find encoder '" << encoder_name 
@@ -202,6 +285,7 @@ int RTSPPusher::open_codec(int width, int height, int den, int kB, std::string e
         //  codec->
 
     }
+    // std::cout << 3 << std::endl;
     // b 创建编码器上下文
     outputVc = avcodec_alloc_context3(codec);
     if (!outputVc)
@@ -227,6 +311,7 @@ int RTSPPusher::open_codec(int width, int height, int den, int kB, std::string e
     outputVc->qmin = 10;
     outputVc->pix_fmt = enable_hardware?AV_PIX_FMT_CUDA:AV_PIX_FMT_YUV420P;
 
+    // std::cout << 4 << std::endl;
     if (enable_hardware)
     {
         AVBufferRef* hw_device_ctx = nullptr;
@@ -257,6 +342,7 @@ int RTSPPusher::open_codec(int width, int height, int den, int kB, std::string e
     av_opt_set(outputVc->priv_data, "tune", "zerolatency", 0);
     av_opt_set(outputVc->priv_data, "preset", "ultrafast", 0);
 
+    // std::cout << 5 << std::endl;
 
     // d 打开编码器上下文
     ret = avcodec_open2(outputVc, codec, 0);
@@ -266,6 +352,7 @@ int RTSPPusher::open_codec(int width, int height, int den, int kB, std::string e
         return encoder_name.empty()?ret:open_codec(width, height, den, kB, "");
     }
     // std::cout << "avcodec_open2 success!" << std::endl;
+    // std::cout << 6 << std::endl;
 
     ret = avformat_alloc_output_context2(&output, nullptr, "rtsp", url.c_str());
     if (ret != 0)
@@ -274,12 +361,25 @@ int RTSPPusher::open_codec(int width, int height, int den, int kB, std::string e
         return ret;
     }
 
-    vs = avformat_new_stream(output, outputVc->codec);
-    vs->codecpar->codec_tag = 0;
-    // 从编码器复制参数
-    avcodec_parameters_from_context(vs->codecpar, outputVc);
-    av_dump_format(output, 0, url.c_str(), 1);
+    // std::cout << 7 <<"," << outputVc->codec << std::endl;
 
+    vs = avformat_new_stream(output, outputVc->codec);
+    
+    if (vs->codecpar)
+    {
+        vs->codecpar->codec_tag = 0;
+        
+    }
+    else
+    {
+        std::cout << "codecpar is NULL" << std::endl;
+    }
+    avcodec_parameters_from_context(vs->codecpar, outputVc);
+    // std::cout << 8 << std::endl;
+    // 从编码器复制参数
+    
+    av_dump_format(output, 0, url.c_str(), 1);
+    // std::cout << 9 << std::endl;
 //    ret = avio_open(&output->pb, url.c_str(), AVIO_FLAG_WRITE);
     return ret;
 }

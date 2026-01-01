@@ -11,6 +11,8 @@ class BaseCapture
 public:
     BaseCapture() {};
 
+    ~BaseCapture() {release();}
+
     virtual bool open(std::string url, int apiPreference=::cv::CAP_ANY) {return false;}
 
     virtual bool read(::cv::Mat &frame) {return false;}
@@ -25,7 +27,7 @@ public:
 
     virtual double get(int propId) {return 0;}
 
-    ~BaseCapture() = default;
+    // ~BaseCapture() = default;
 };
 }
 #endif // BASE_CAPTURE_H
