@@ -19,7 +19,7 @@ mkdir build;cd build
 cmake -DENABLE_RKMPP=OFF ..   # 如果在瑞芯微平台上使用，可以打开该选项通过mpp和rga库进行硬件加速
 make -j8
 ```
-将生成`libeasyvideo.so`和推流的demo可执行文件`pushRTSP`，将`include`和该动态库文件放到相应环境下即可使用
+将生成`libeasyvideo.so`和推流的demo可执行文件`pushRTSP`，将文件夹`include/easyvideo`和该动态库文件放到相应环境下即可使用
 
 ## 使用
 
